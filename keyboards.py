@@ -31,6 +31,34 @@ def get_mining_menu_keyboard(is_mining: bool = False, mining_active: bool = Fals
     return builder.as_markup()
 
 
+def get_collect_completed_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура для завершения копания (после остановки или из уведомления)
+    Кнопки: Собрать (широкая синяя), Закрыть (широкая синяя)
+    """
+    builder = InlineKeyboardBuilder()
+    
+    builder.button(text="🧱 Собрать", callback_data="collect_resources")
+    builder.button(text="Закрыть", callback_data="close_menu")
+    builder.adjust(1)
+    
+    return builder.as_markup()
+
+
+def get_mining_finished_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура для уведомления о завершении по таймеру
+    Кнопки: Собрать (широкая темная), Закрыть (квадратная)
+    """
+    builder = InlineKeyboardBuilder()
+    
+    # Собрать - широкая темная кнопка (открывает меню как при само-остановке)
+    builder.button(text="🧱 Собрать", callback_data="collect_from_notification")
+    # Закрыть - квадратная кнопка
+    builder.button(text="Закрыть", callback_data="close_menu")
+    builder.adjust(1)
+    
+    return builder.as_markup()
+
+
 def get_mines_keyboard(user_level: int, current_mine: int = 0) -> InlineKeyboardMarkup:
     """Клавиатура выбора шахты"""
     from config import MINES
