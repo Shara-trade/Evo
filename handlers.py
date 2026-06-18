@@ -103,40 +103,33 @@ async def add_to_inventory(session: AsyncSession, user_id: int, item_type: str, 
     await session.commit()
 
 
-async def calculate_mining_results(ms: MiningSession, power: float, plasma_chance: float) -> tuple[int, int, int, list]:
+async def accumulate_plasma_and_cases(ms: MiningSession, plasma_chance: float) -> tuple[int, int, list]:
     """
-    Рассчитать результаты добычи.
-    1 секунда = 1 удар
-    Руда = hits × power
-    Плазма = 5% за удар
-    Кейсы = 3% за удар
+    Накопить плазму и кейсы за прошедшее время с last_update.
+    Плазма НАКАПЛИВАЕТСЯ: каждую 1 секунду → если random() < plasma_chance → plasma_dug += 1
+    Возвращает: (новые удары, новая плазма, новые кейсы)
     """
-    if not ms.start_time or not ms.is_active:
-        return 0, 0, 0, []
+    if not ms.last_update or not ms.is_active:
+        return 0, 0, []
     
     now = datetime.utcnow()
-    end_time = ms.end_time or now
+    elapsed_seconds = int((now - ms.last_update).total_seconds())
+    elapsed_seconds = max(0, elapsed_seconds)
     
-    if end_time > now:
-        end_time = now
+    if elapsed_seconds == 0:
+        return 0, 0, []
     
-    total_seconds = int((end_time - ms.start_time).total_seconds())
-    total_seconds = max(0, min(total_seconds, BASE_MINING_TIME))
+    # Накопление плазмы и кейсов за прошедшие секунды
+    new_plasma = 0
+    new_cases = []
     
-    # Руда = удары × мощность
-    ores_dug = int(total_seconds * power)
-    
-    # Плазма и кейсы
-    plasma_dug = 0
-    cases_list = []
-    
-    for _ in range(total_seconds):
+    for _ in range(elapsed_seconds):
         if random.random() * 100 < plasma_chance:
-            plasma_dug += 1
+            new_plasma += 1
         if random.random() * 100 < CASE_CHANCE:
-            cases_list.append(get_random_case())
+            new_cases.append(get_random_case())
     
-    return total_seconds, ores_dug, plasma_dug, cases_list
+    return elapsed_seconds, new_plasma, new_cases
 
 
 # ==================== КОМАНДЫ ====================
@@ -225,8 +218,11 @@ async def cb_mining_menu(callback: types.CallbackQuery, session: AsyncSession):
     now = datetime.utcnow()
     
     if user.is_mining and ms.is_active and ms.end_time and now < ms.end_time:
-        hits, ores, plasma, cases = await calculate_mining_results(ms, power, user.plasma_chance)
-        remaining = int((ms.end_time - now).total_seconds())
+        # Показываем ТОЛЬКО накопленные значения из БД (не пересчитывать!)
+        hits = ms.hits or 0
+        ores = ms.ores_dug or 0
+        plasma = ms.plasma_dug or 0
+        cases_count = ms.cases_found or 0
         
         flood_warn = ""
         if ms.last_update and (now - ms.last_update).total_seconds() < FLOOD_WAIT_WARN:
@@ -242,27 +238,43 @@ async def cb_mining_menu(callback: types.CallbackQuery, session: AsyncSession):
             f"⛏️ Удары: {hits}\n"
             f"🧱 {ore_name}: {ores:,}\n"
             f"🎆 Плазма: {plasma}\n"
-            f"📦 Кейсы: {len(cases)}\n"
+            f"📦 Кейсы: {cases_count}\n"
             f"{'.' * 30}\n"
-            f"⏳ Осталось: {format_time(remaining)}"
+            f"⏳ Осталось: {format_time(int((ms.end_time - now).total_seconds()))}"
             f"{flood_warn}"
         )
         await callback.message.edit_text(text, reply_markup=get_mining_menu_keyboard(is_mining=True, mining_active=True), parse_mode="HTML")
         
     elif user.is_mining and ms.is_active:
-        # Время вышло
-        hits, ores, plasma, cases = await calculate_mining_results(ms, power, user.plasma_chance)
+        # Время вышло — сначала накопим плазму за прошедшее время
+        elapsed, new_plasma, new_cases = await accumulate_plasma_and_cases(ms, user.plasma_chance)
+        
+        if elapsed > 0:
+            ms.plasma_dug = (ms.plasma_dug or 0) + new_plasma
+            existing_cases = json.loads(ms.cases_list) if ms.cases_list else []
+            all_cases = existing_cases + new_cases
+            ms.cases_list = json.dumps(all_cases)
+            ms.cases_found = len(all_cases)
+            ms.hits = (ms.hits or 0) + elapsed
+            power = calculate_power(user.pickaxe_power, user.booster_power)
+            ms.ores_dug = int(ms.hits * power)
+        
+        # Теперь используем накопленные значения
+        hits = ms.hits or 0
+        ores = ms.ores_dug or 0
+        plasma = ms.plasma_dug or 0
+        cases_count = ms.cases_found or 0
+        
         ms.hits = hits
         ms.ores_dug = ores
         ms.plasma_dug = plasma
-        ms.cases_found = len(cases)
-        ms.cases_list = json.dumps(cases)
+        ms.cases_found = cases_count
         ms.is_active = False
         user.is_mining = False
         user.session_hits = hits
         user.session_ores = ores
         user.session_plasma = plasma
-        user.session_cases = len(cases)
+        user.session_cases = cases_count
         await session.commit()
         
         text = (
@@ -275,7 +287,7 @@ async def cb_mining_menu(callback: types.CallbackQuery, session: AsyncSession):
             f"⛏️ Удары: {hits}\n"
             f"🧱 {ore_name}: {ores:,}\n"
             f"🎆 Плазма: {plasma}\n"
-            f"📦 Кейсы: {len(cases)}\n"
+            f"📦 Кейсы: {cases_count}\n"
             f"{'.' * 30}\n"
             f"<i>Соберите ресурсы!</i>"
         )
@@ -343,7 +355,9 @@ async def cb_start_mining(callback: types.CallbackQuery, session: AsyncSession):
 
 @router.callback_query(F.data == "update_mining")
 async def cb_update_mining(callback: types.CallbackQuery, session: AsyncSession):
-    """Обновить (всегда доступно)"""
+    """Обновить (всегда доступно)
+    Плазма НАКАПЛИВАЕТСЯ: каждую 1 секунду → если random() < plasma_chance → plasma_dug += 1
+    """
     user = await get_or_create_user(session, callback.from_user.id)
     ms = await get_or_create_session(session, user.id)
     
@@ -359,6 +373,24 @@ async def cb_update_mining(callback: types.CallbackQuery, session: AsyncSession)
         await callback.answer("⏰ Время вышло!")
         await cb_mining_menu(callback, session)
         return
+    
+    # Накопление плазмы и кейсов за прошедшее время
+    elapsed, new_plasma, new_cases = await accumulate_plasma_and_cases(ms, user.plasma_chance)
+    
+    if elapsed > 0:
+        # Обновляем накопленные значения
+        ms.plasma_dug = (ms.plasma_dug or 0) + new_plasma
+        
+        # Добавляем новые кейсы к существующим
+        existing_cases = json.loads(ms.cases_list) if ms.cases_list else []
+        all_cases = existing_cases + new_cases
+        ms.cases_list = json.dumps(all_cases)
+        ms.cases_found = len(all_cases)
+        
+        # Обновляем hits и ores_dug
+        power = calculate_power(user.pickaxe_power, user.booster_power)
+        ms.hits = (ms.hits or 0) + elapsed
+        ms.ores_dug = int(ms.hits * power)
     
     ms.last_update = now
     user.last_update = now
@@ -379,23 +411,39 @@ async def cb_stop_mining(callback: types.CallbackQuery, session: AsyncSession):
         return
     
     now = datetime.utcnow()
+    
+    # Сначала накопим плазму за прошедшее время
+    elapsed, new_plasma, new_cases = await accumulate_plasma_and_cases(ms, user.plasma_chance)
+    
+    if elapsed > 0:
+        ms.plasma_dug = (ms.plasma_dug or 0) + new_plasma
+        existing_cases = json.loads(ms.cases_list) if ms.cases_list else []
+        all_cases = existing_cases + new_cases
+        ms.cases_list = json.dumps(all_cases)
+        ms.cases_found = len(all_cases)
+        ms.hits = (ms.hits or 0) + elapsed
+        power = calculate_power(user.pickaxe_power, user.booster_power)
+        ms.ores_dug = int(ms.hits * power)
+    
     ms.is_active = False
     ms.end_time = now
     user.is_mining = False
     
-    power = calculate_power(user.pickaxe_power, user.booster_power)
-    hits, ores, plasma, cases = await calculate_mining_results(ms, power, user.plasma_chance)
+    # Используем накопленные значения
+    hits = ms.hits or 0
+    ores = ms.ores_dug or 0
+    plasma = ms.plasma_dug or 0
+    cases_count = ms.cases_found or 0
     
     ms.hits = hits
     ms.ores_dug = ores
     ms.plasma_dug = plasma
-    ms.cases_found = len(cases)
-    ms.cases_list = json.dumps(cases)
+    ms.cases_found = cases_count
     
     user.session_hits = hits
     user.session_ores = ores
     user.session_plasma = plasma
-    user.session_cases = len(cases)
+    user.session_cases = cases_count
     
     await session.commit()
     await callback.answer("⏹️ Остановлено")
