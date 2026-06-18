@@ -132,6 +132,31 @@ async def accumulate_plasma_and_cases(ms: MiningSession, plasma_chance: float) -
     return elapsed_seconds, new_plasma, new_cases
 
 
+async def mining_finished_by_time(message: types.Message, session: AsyncSession, user, ms: MiningSession):
+    """Отправить НОВОЕ сообщение о завершении по таймеру (🔔 вариант)"""
+    from keyboards import get_mining_finished_keyboard
+    
+    hits = ms.hits or 0
+    ores = ms.ores_dug or 0
+    plasma = ms.plasma_dug or 0
+    
+    # Сохраняем в сессию пользователя для последующего сбора
+    user.session_hits = hits
+    user.session_ores = ores
+    user.session_plasma = plasma
+    user.session_cases = ms.cases_found or 0
+    await session.commit()
+    
+    # ОТПРАВЛЯЕМ НОВОЕ сообщение с 🔔 (время закончилось)
+    text = (
+        f"🔔 **Копание завершено!**\n"
+        f"{'.' * 30}\n"
+        f"*Собери ресурсы, чтобы начать добычу заново!*"
+    )
+    
+    await message.answer(text, reply_markup=get_mining_finished_keyboard(), parse_mode="HTML")
+
+
 # ==================== КОМАНДЫ ====================
 
 @router.message(CommandStart())
@@ -151,7 +176,7 @@ async def cmd_start(message: types.Message, session: AsyncSession):
         "Используй кнопки ниже!"
     )
     await message.answer(text, reply_markup=get_main_menu_keyboard(), parse_mode="HTML")
-
+    
 
 @router.message(Command("bal") | F.text.lower() == "б")
 async def cmd_balance(message: types.Message, session: AsyncSession):
@@ -277,21 +302,8 @@ async def cb_mining_menu(callback: types.CallbackQuery, session: AsyncSession):
         user.session_cases = cases_count
         await session.commit()
         
-        text = (
-            f"⛏️ <b>Копание завершено!</b>\n\n"
-            f"{'.' * 30}\n"
-            f"⛰️ Шахта: {mine_name}\n"
-            f"🧱 Руда: {ore_name}\n"
-            f"⏳ Время: {format_time(BASE_MINING_TIME)}\n"
-            f"{'.' * 30}\n"
-            f"⛏️ Удары: {hits}\n"
-            f"🧱 {ore_name}: {ores:,}\n"
-            f"🎆 Плазма: {plasma}\n"
-            f"📦 Кейсы: {cases_count}\n"
-            f"{'.' * 30}\n"
-            f"<i>Соберите ресурсы!</i>"
-        )
-        await callback.message.edit_text(text, reply_markup=get_mining_menu_keyboard(is_mining=True, can_collect=True), parse_mode="HTML")
+        # Отправляем НОВОЕ сообщение с 🔔 через вспомогательную функцию
+        await mining_finished_by_time(callback.message, session, user, ms)
         
     else:
         text = (
@@ -371,7 +383,8 @@ async def cb_update_mining(callback: types.CallbackQuery, session: AsyncSession)
         user.is_mining = False
         await session.commit()
         await callback.answer("⏰ Время вышло!")
-        await cb_mining_menu(callback, session)
+        # Отправляем НОВОЕ сообщение с 🔔 вместо редактирования
+        await mining_finished_by_time(callback.message, session, user, ms)
         return
     
     # Накопление плазмы и кейсов за прошедшее время
@@ -402,7 +415,7 @@ async def cb_update_mining(callback: types.CallbackQuery, session: AsyncSession)
 
 @router.callback_query(F.data == "stop_mining")
 async def cb_stop_mining(callback: types.CallbackQuery, session: AsyncSession):
-    """Остановить"""
+    """Остановить (само-остановка через кнопку 🚫)"""
     user = await get_or_create_user(session, callback.from_user.id)
     ms = await get_or_create_session(session, user.id)
     
@@ -447,7 +460,54 @@ async def cb_stop_mining(callback: types.CallbackQuery, session: AsyncSession):
     
     await session.commit()
     await callback.answer("⏹️ Остановлено")
-    await cb_mining_menu(callback, session)
+    
+    # ЗАМЕНЯЕМ сообщение на ⛏️ вариант
+    mine = MINES.get(user.current_mine, MINES[0])
+    ore_name = mine["ore"].capitalize()
+    
+    text = (
+        f"⛏️ **Копание завершено!**\n"
+        f"{'.' * 30}\n"
+        f"⛰️ Шахта : {ms.mine_name or mine['name']}\n"
+        f"⏳ Время копания : {hits}с.\n"
+        f"{'.' * 30}\n"
+        f"⛏️ Удары киркой : {hits}\n"
+        f"🧱 Руды добыто : {ores}\n"
+        f"🎆 Плазмы добыто : {plasma}"
+    )
+    
+    # Кнопки: Собрать (широкая синяя), Закрыть (широкая синяя)
+    from keyboards import get_collect_completed_keyboard
+    await callback.message.edit_text(text, reply_markup=get_collect_completed_keyboard(), parse_mode="HTML")
+
+
+@router.callback_query(F.data == "collect_from_notification")
+async def cb_collect_from_notification(callback: types.CallbackQuery, session: AsyncSession):
+    """Собрать из уведомления (когда время закончилось) - показывает то же меню как при само-остановке"""
+    user = await get_or_create_user(session, callback.from_user.id)
+    ms = await get_or_create_session(session, user.id)
+    
+    # Используем накопленные значения из сессии майнинга
+    hits = ms.hits or 0
+    ores = ms.ores_dug or 0
+    plasma = ms.plasma_dug or 0
+    
+    mine = MINES.get(user.current_mine, MINES[0])
+    
+    text = (
+        f"⛏️ **Копание завершено!**\n"
+        f"{'.' * 30}\n"
+        f"⛰️ Шахта : {ms.mine_name or mine['name']}\n"
+        f"⏳ Время копания : {hits}с.\n"
+        f"{'.' * 30}\n"
+        f"⛏️ Удары киркой : {hits}\n"
+        f"🧱 Руды добыто : {ores}\n"
+        f"🎆 Плазмы добыто : {plasma}"
+    )
+    
+    from keyboards import get_collect_completed_keyboard
+    await callback.message.edit_text(text, reply_markup=get_collect_completed_keyboard(), parse_mode="HTML")
+    await callback.answer()
 
 
 @router.callback_query(F.data == "collect_resources")
