@@ -12,7 +12,7 @@ DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///mining_bot.db")
 
 # Настройки добычи
 BASE_MINING_TIME = 300  # 5 минут в секундах
-FLOOD_WAIT = 120  # 2 минуты между обновлениями
+FLOOD_WAIT_WARN = 120  # 2 минуты - предупреждение о flood wait
 
 # Типы руды и шахты
 MINES = {
@@ -52,8 +52,11 @@ ORE_CHANCES = {
     "платина": 0.2,
 }
 
-PLASMA_CHANCE = 5  # 5% шанс выпадения плазмы
-CASE_CHANCE = 2  # 2% шанс выпадения кейса
+PLASMA_CHANCE = 5  # 5% шанс выпадения плазмы (можно улучшить до 75%)
+CASE_CHANCE = 3  # 3% шанс выпадения кейса
+
+# Типы кейсов
+CASE_TYPES = ["коробка", "конверт", "сумка", "ящик", "портфель"]
 
 # Кейсы
 CASES = {
