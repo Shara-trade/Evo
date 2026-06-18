@@ -3,7 +3,7 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 
-def get_mining_menu_keyboard(is_mining: bool = False, mining_active: bool = False, can_collect: bool = False) -> InlineKeyboardMarkup:
+def get_mining_menu_keyboard(is_mining: bool = False, mining_active: bool = False, can_collect: bool = False, show_flood_warn: bool = False) -> InlineKeyboardMarkup:
     """Клавиатура меню добычи"""
     builder = InlineKeyboardBuilder()
     
@@ -14,12 +14,13 @@ def get_mining_menu_keyboard(is_mining: bool = False, mining_active: bool = Fals
         builder.adjust(1)  # Кнопки друг под другом
         
     elif mining_active:
-        # Копание активно
+        # Копание активно - кнопка 🔄 ВСЕГДА доступна
         builder.button(text="🚫 Остановить", callback_data="stop_mining")
         builder.row(
             InlineKeyboardButton(text="Закрыть", callback_data="close_menu"),
             InlineKeyboardButton(text="🔄", callback_data="update_mining")
         )
+        # Кнопка обновления всегда активна, предупреждение в тексте сообщения
         
     elif can_collect:
         # Копание завершено, можно собрать
