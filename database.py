@@ -78,6 +78,10 @@ class MiningSession(Base):
     is_active = Column(Boolean, default=False)
     last_update = Column(DateTime, default=datetime.utcnow)
 
+    # Для авто-уведомления
+    chat_id = Column(BigInteger, nullable=True)  # ID чата для отправки уведомления
+    notification_sent = Column(Boolean, default=False)  # Флаг: уведомление отправлено
+
 
 class Inventory(Base):
     """Таблица инвентаря"""
