@@ -1,7 +1,7 @@
 """Модуль работы с базой данных"""
-from sqlalchemy import Column, Integer, String, BigInteger, Float, Boolean, DateTime, JSON
+from sqlalchemy import Column, Integer, String, BigInteger, Float, Boolean, DateTime, JSON, ForeignKey
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 from datetime import datetime
 import json
 
@@ -31,17 +31,23 @@ class User(Base):
     pickaxe_power = Column(Float, default=1.0)
     booster_power = Column(Float, default=1.0)
     
+    # Шанс плазмы (можно улучшать)
+    plasma_chance = Column(Float, default=5.0)  # 5% базовый шанс
+    
     # Состояние добычи
     is_mining = Column(Boolean, default=False)
     current_mine = Column(Integer, default=0)
+    current_ore = Column(String, nullable=True)  # Текущая руда в сессии
     mining_start = Column(DateTime, nullable=True)
     mining_end = Column(DateTime, nullable=True)
     last_update = Column(DateTime, nullable=True)
+    last_flood_warn = Column(DateTime, nullable=True)  # Последнее предупреждение о flood wait
     
-    # Статистика сессии
+    # Статистика сессии (накапливается, но не сохраняется в инвентарь до сбора)
     session_hits = Column(Integer, default=0)
-    session_ores = Column(Integer, default=0)
+    session_ores = Column(BigInteger, default=0)  # Выкопано руды (power × hits)
     session_plasma = Column(Integer, default=0)
+    session_cases = Column(Integer, default=0)
     
     # Инвентарь (JSON)
     inventory = Column(JSON, default=lambda: json.dumps({"ores": {}, "cases": {}, "items": {}}))
@@ -50,6 +56,38 @@ class User(Base):
     bosses_defeated = Column(JSON, default=lambda: json.dumps([]))
     
     created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class MiningSession(Base):
+    """Таблица активных сессий добычи"""
+    __tablename__ = "mining_sessions"
+
+    user_id = Column(BigInteger, primary_key=True)
+    mine_id = Column(Integer, default=0)  # ID шахты
+    mine_name = Column(String, nullable=True)  # Название шахты (напр. "Земля I")
+    ore_name = Column(String, nullable=True)  # Название руды (напр. "земля")
+    power = Column(Float, default=1.0)  # Мощность кирки
+    start_time = Column(DateTime, nullable=True)
+    end_time = Column(DateTime, nullable=True)
+    hits = Column(Integer, default=0)  # Количество ударов
+    ores_dug = Column(BigInteger, default=0)  # Выкопано руды (power × hits)
+    plasma_dug = Column(Integer, default=0)
+    cases_found = Column(Integer, default=0)
+    cases_list = Column(String, nullable=True)  # JSON список найденных кейсов
+    is_active = Column(Boolean, default=False)
+    last_update = Column(DateTime, default=datetime.utcnow)
+
+
+class Inventory(Base):
+    """Таблица инвентаря"""
+    __tablename__ = "inventory"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(BigInteger, ForeignKey("users.id"), nullable=False)
+    item_type = Column(String, nullable=False)  # "ore", "case", "item"
+    item_name = Column(String, nullable=False)  # Название предмета
+    quantity = Column(BigInteger, default=0)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
