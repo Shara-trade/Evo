@@ -1,47 +1,40 @@
-"""Миграция: добавление колонок chat_id и notification_sent в mining_sessions"""
+"""Миграция: добавление поля clan в таблицу users"""
 import asyncio
-import sqlite3
-from pathlib import Path
-
-DB_PATH = Path("mining_bot.db")
+import sys
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.orm import sessionmaker
+from config import DATABASE_URL
 
 
 async def migrate():
-    """Добавить новые колонки в таблицу mining_sessions"""
-    if not DB_PATH.exists():
-        print(f"DB {DB_PATH} not found. Run the bot first.")
-        return
-    
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
+    """Добавить поле clan в таблицу users"""
+    engine = create_async_engine(DATABASE_URL, echo=False)
+    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     
     try:
-        # Check existing columns
-        cursor.execute("PRAGMA table_info(mining_sessions)")
-        columns = {col[1] for col in cursor.fetchall()}
-        
-        # Add chat_id if not exists
-        if "chat_id" not in columns:
-            cursor.execute("ALTER TABLE mining_sessions ADD COLUMN chat_id INTEGER")
-            print("Added column: chat_id")
-        else:
-            print("Column chat_id already exists")
-        
-        # Add notification_sent if not exists
-        if "notification_sent" not in columns:
-            cursor.execute("ALTER TABLE mining_sessions ADD COLUMN notification_sent BOOLEAN DEFAULT 0")
-            print("Added column: notification_sent")
-        else:
-            print("Column notification_sent already exists")
-        
-        conn.commit()
-        print("Migration completed!")
-        
+        async with engine.begin() as conn:
+            # Проверяем, существует ли колонка clan
+            result = await conn.execute(text("""
+                SELECT name FROM pragma_table_info('users') WHERE name='clan'
+            """))
+            rows = result.fetchall()
+            
+            if rows:
+                print("✅ Поле 'clan' уже существует")
+                return
+            
+            # Добавляем поле clan
+            await conn.execute(text("""
+                ALTER TABLE users ADD COLUMN clan TEXT NULL
+            """))
+            print("✅ Поле 'clan' успешно добавлено")
+            
     except Exception as e:
-        print(f"Migration error: {e}")
-        conn.rollback()
+        print(f"❌ Ошибка миграции: {e}")
+        sys.exit(1)
     finally:
-        conn.close()
+        await engine.dispose()
 
 
 if __name__ == "__main__":
