@@ -1,161 +1,162 @@
-"""Модуль работы с базой данных"""
-from sqlalchemy import Column, Integer, String, BigInteger, Float, Boolean, DateTime, JSON, ForeignKey
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import declarative_base, sessionmaker, relationship
-from datetime import datetime
-import json
-
-Base = declarative_base()
+"""Клавиатуры для бота"""
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 
-class User(Base):
-    """Таблица пользователей"""
-    __tablename__ = "users"
-
-    id = Column(BigInteger, primary_key=True)
-    username = Column(String, nullable=True)
-    first_name = Column(String, nullable=True)
+def get_mining_menu_keyboard(is_mining: bool = False, mining_active: bool = False, can_collect: bool = False, show_flood_warn: bool = False) -> InlineKeyboardMarkup:
+    """Клавиатура меню добычи"""
+    builder = InlineKeyboardBuilder()
     
-    # Клан
-    clan = Column(String, nullable=True)  # Название клана
+    if not is_mining:
+        # Копание не запущено
+        builder.button(text="🔨 Добывать", callback_data="start_mining")
+        builder.button(text="Закрыть", callback_data="close_menu")
+        builder.adjust(1)  # Кнопки друг под другом
+        
+    elif mining_active:
+        # Копание активно - кнопка 🔄 ВСЕГДА доступна
+        builder.button(text="🚫 Остановить", callback_data="stop_mining")
+        builder.row(
+            InlineKeyboardButton(text="Закрыть", callback_data="close_menu"),
+            InlineKeyboardButton(text="🔄", callback_data="update_mining")
+        )
+        # Кнопка обновления всегда активна, предупреждение в тексте сообщения
+        
+    elif can_collect:
+        # Копание завершено, можно собрать
+        builder.button(text="🧱 Собрать", callback_data="collect_resources")
+        builder.button(text="Закрыть", callback_data="close_menu")
+        builder.adjust(1)
     
-    # Ресурсы
-    balance = Column(BigInteger, default=0)
-    plasma = Column(BigInteger, default=0)
-    level = Column(Integer, default=1)
-    experience = Column(Integer, default=0)
+    return builder.as_markup()
+
+
+def get_collect_completed_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура для завершения копания (после остановки или из уведомления)
+    Кнопки: Собрать (широкая синяя), Закрыть (широкая синяя)
+    """
+    builder = InlineKeyboardBuilder()
     
-    # Лимит переводов
-    transfer_limit = Column(BigInteger, default=1000)
-    received_today = Column(BigInteger, default=0)
-    last_reset = Column(DateTime, default=datetime.utcnow)
+    builder.button(text="🧱 Собрать", callback_data="collect_resources")
+    builder.button(text="Закрыть", callback_data="close_menu")
+    builder.adjust(1)
     
-    # Мощность
-    pickaxe_power = Column(Float, default=1.0)
-    booster_power = Column(Float, default=1.0)
+    return builder.as_markup()
+
+
+def get_mining_finished_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура для уведомления о завершении по таймеру
+    Кнопки: Собрать (широкая темная), Закрыть (квадратная)
+    """
+    builder = InlineKeyboardBuilder()
     
-    # Шанс плазмы (можно улучшать)
-    plasma_chance = Column(Float, default=5.0)  # 5% базовый шанс
+    # Собрать - широкая темная кнопка (открывает меню как при само-остановке)
+    builder.button(text="🧱 Собрать", callback_data="collect_from_notification")
+    # Закрыть - квадратная кнопка
+    builder.button(text="Закрыть", callback_data="close_menu")
+    builder.adjust(1)
     
-    # Состояние добычи
-    is_mining = Column(Boolean, default=False)
-    current_mine = Column(Integer, default=0)
-    current_ore = Column(String, nullable=True)  # Текущая руда в сессии
-    mining_start = Column(DateTime, nullable=True)
-    mining_end = Column(DateTime, nullable=True)
-    last_update = Column(DateTime, nullable=True)
-    last_flood_warn = Column(DateTime, nullable=True)  # Последнее предупреждение о flood wait
+    return builder.as_markup()
+
+
+def get_mines_keyboard(user_level: int, current_mine: int = 0) -> InlineKeyboardMarkup:
+    """Клавиатура выбора шахты"""
+    from config import MINES
     
-    # Статистика сессии (накапливается, но не сохраняется в инвентарь до сбора)
-    session_hits = Column(Integer, default=0)
-    session_ores = Column(BigInteger, default=0)  # Выкопано руды (power × hits)
-    session_plasma = Column(Integer, default=0)
-    session_cases = Column(Integer, default=0)
+    builder = InlineKeyboardBuilder()
     
-    # Инвентарь (JSON)
-    inventory = Column(JSON, default=lambda: json.dumps({"ores": {}, "cases": {}, "items": {}}))
+    for mine_id, mine_data in MINES.items():
+        if user_level >= mine_data["level_req"]:
+            status = "✅" if mine_id == current_mine else ""
+            builder.button(
+                text=f"{status} {mine_data['name']} (ур. {mine_data['level_req']})",
+                callback_data=f"select_mine_{mine_id}"
+            )
     
-    # Боссы
-    bosses_defeated = Column(JSON, default=lambda: json.dumps([]))
+    builder.button(text="🔙 Назад", callback_data="back_to_mining")
+    builder.adjust(1)
     
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    return builder.as_markup()
 
 
-class MiningSession(Base):
-    """Таблица активных сессий добычи"""
-    __tablename__ = "mining_sessions"
-
-    user_id = Column(BigInteger, primary_key=True)
-    mine_id = Column(Integer, default=0)  # ID шахты
-    mine_name = Column(String, nullable=True)  # Название шахты (напр. "Земля I")
-    ore_name = Column(String, nullable=True)  # Название руды (напр. "земля")
-    power = Column(Float, default=1.0)  # Мощность кирки
-    start_time = Column(DateTime, nullable=True)
-    end_time = Column(DateTime, nullable=True)
-    hits = Column(Integer, default=0)  # Количество ударов
-    ores_dug = Column(BigInteger, default=0)  # Выкопано руды (power × hits)
-    plasma_dug = Column(Integer, default=0)
-    cases_found = Column(Integer, default=0)
-    cases_list = Column(String, nullable=True)  # JSON список найденных кейсов
-    is_active = Column(Boolean, default=False)
-    last_update = Column(DateTime, default=datetime.utcnow)
-
-    # Для авто-уведомления
-    chat_id = Column(BigInteger, nullable=True)  # ID чата для отправки уведомления
-    notification_sent = Column(Boolean, default=False)  # Флаг: уведомление отправлено
-
-
-class Inventory(Base):
-    """Таблица инвентаря"""
-    __tablename__ = "inventory"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(BigInteger, ForeignKey("users.id"), nullable=False)
-    item_type = Column(String, nullable=False)  # "ore", "case", "item"
-    item_name = Column(String, nullable=False)  # Название предмета
-    quantity = Column(BigInteger, default=0)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-
-class Transaction(Base):
-    """Таблица транзакций"""
-    __tablename__ = "transactions"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    from_user = Column(BigInteger, nullable=True)
-    to_user = Column(BigInteger)
-    amount = Column(BigInteger)
-    timestamp = Column(DateTime, default=datetime.utcnow)
-    type = Column(String)  # "transfer", "sale", "upgrade"
-
-
-async def init_db(database_url: str):
-    """Инициализация базы данных"""
-    engine = create_async_engine(database_url, echo=False)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+def get_main_menu_keyboard() -> InlineKeyboardMarkup:
+    """Главное меню"""
+    builder = InlineKeyboardBuilder()
     
-    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    return async_session
+    builder.button(text="⛏️ Добывать", callback_data="mining_menu")
+    builder.button(text="🎒 Инвентарь", callback_data="inventory")
+    builder.button(text="💵 Баланс", callback_data="balance")
+    builder.button(text="📈 Уровень", callback_data="level_info")
+    builder.button(text="🔄 Перевод", callback_data="transfer_menu")
+    builder.button(text="🏪 Магазин", callback_data="shop")
+    builder.button(text="👤 Профиль", callback_data="profile")
+    
+    builder.adjust(1)
+    
+    return builder.as_markup()
 
 
-async def get_user(session: AsyncSession, user_id: int) -> User | None:
-    """Получить пользователя"""
-    return await session.get(User, user_id)
+def get_inventory_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура инвентаря"""
+    builder = InlineKeyboardBuilder()
+    
+    builder.button(text="💵 Продать всю руду", callback_data="sell_all_ores")
+    builder.button(text="🔙 Назад", callback_data="main_menu")
+    builder.adjust(1)
+    
+    return builder.as_markup()
 
 
-async def create_user(session: AsyncSession, user_id: int, username: str = None, first_name: str = None) -> User:
-    """Создать нового пользователя"""
-    user = User(
-        id=user_id,
-        username=username,
-        first_name=first_name,
-        inventory=json.dumps({"ores": {}, "cases": {}, "items": {}})
-    )
-    session.add(user)
-    await session.commit()
-    await session.refresh(user)
-    return user
+def get_transfer_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура перевода"""
+    builder = InlineKeyboardBuilder()
+    
+    builder.button(text="🔙 Назад", callback_data="main_menu")
+    builder.adjust(1)
+    
+    return builder.as_markup()
 
 
-async def get_or_create_user(session: AsyncSession, user_id: int, username: str = None, first_name: str = None) -> User:
-    """Получить или создать пользователя"""
-    user = await get_user(session, user_id)
-    if not user:
-        user = await create_user(session, user_id, username, first_name)
-    return user
+def get_shop_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура магазина"""
+    builder = InlineKeyboardBuilder()
+    
+    builder.button(text="⚒️ Улучшить кирку", callback_data="upgrade_pickaxe")
+    builder.button(text="🚀 Купить бустер", callback_data="buy_booster")
+    builder.button(text="🔙 Назад", callback_data="main_menu")
+    builder.adjust(1)
+    
+    return builder.as_markup()
 
 
-def parse_inventory(inventory_json: str) -> dict:
-    """Парсинг инвентаря"""
-    if isinstance(inventory_json, dict):
-        return inventory_json
-    if inventory_json is None:
-        return {"ores": {}, "cases": {}, "items": {}}
-    return json.loads(inventory_json)
+def get_confirmation_keyboard(confirm_data: str, cancel_data: str = "main_menu") -> InlineKeyboardMarkup:
+    """Клавиатура подтверждения"""
+    builder = InlineKeyboardBuilder()
+    
+    builder.button(text="✅ Подтвердить", callback_data=confirm_data)
+    builder.button(text="❌ Отмена", callback_data=cancel_data)
+    builder.adjust(2)
+    
+    return builder.as_markup()
 
 
-def serialize_inventory(inventory: dict) -> str:
-    """Сериализация инвентаря"""
-    return json.dumps(inventory)
+def get_boss_keyboard(boss_id: int) -> InlineKeyboardMarkup:
+    """Клавиатура боя с боссом"""
+    builder = InlineKeyboardBuilder()
+    
+    builder.button(text="⚔️ Атаковать", callback_data=f"attack_boss_{boss_id}")
+    builder.button(text="🏃 Сбежать", callback_data="flee_boss")
+    builder.adjust(2)
+    
+    return builder.as_markup()
+
+
+def get_profile_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура профиля"""
+    builder = InlineKeyboardBuilder()
+    
+    builder.button(text="📋 Копировать ник", callback_data="copy_nickname")
+    builder.button(text="🔙 Назад", callback_data="main_menu")
+    builder.adjust(1)
+    
+    return builder.as_markup()
