@@ -18,7 +18,7 @@ from config import (
 from database import get_or_create_user, MiningSession, Inventory
 from keyboards import (
     get_mining_menu_keyboard, get_mines_keyboard, get_main_menu_keyboard,
-    get_inventory_keyboard, get_shop_keyboard
+    get_inventory_keyboard, get_shop_keyboard, get_profile_keyboard
 )
 
 router = Router()
@@ -772,3 +772,174 @@ async def cb_buy_booster(callback: types.CallbackQuery, session: AsyncSession):
     await session.commit()
     await callback.answer(f"🚀 Бустер ×{user.booster_power:.2f}!")
     await cb_shop(callback, session)
+
+
+# ==================== ФОРМАТИРОВАНИЕ ЧИСЕЛ ====================
+
+def format_number(num: int | float) -> str:
+    """
+    Форматирование больших чисел:
+    1234 → 1.23K, 1234567 → 1.23M, 1234567890 → 1.23B
+    10^15 → Qi, 10^18 → Sx, 10^21 → Sp, 10^24 → Oc, 10^27 → No
+    10^30 → D, 10^33 → Ud, 10^36 → DD
+    """
+    if num < 1000:
+        return str(int(num)) if isinstance(num, int) or num == int(num) else f"{num:.2f}"
+    
+    suffixes = [
+        (10**33, "Ud"),   # Undecillion
+        (10**30, "D"),    # Decillion
+        (10**27, "No"),   # Nonillion
+        (10**24, "Oc"),   # Octillion
+        (10**21, "Sp"),   # Septillion
+        (10**18, "Sx"),   # Sextillion
+        (10**15, "Qi"),   # Quintillion
+        (10**12, "Qa"),   # Quadrillion
+        (10**9, "B"),     # Billion
+        (10**6, "M"),     # Million
+        (10**3, "K"),     # Thousand
+    ]
+    
+    for divisor, suffix in suffixes:
+        if num >= divisor:
+            value = num / divisor
+            # Округляем до 2 знаков после запятой
+            if value >= 100:
+                return f"{int(value)}{suffix}"
+            elif value >= 10:
+                return f"{value:.1f}{suffix}"
+            else:
+                return f"{value:.2f}{suffix}"
+    
+    return str(int(num))
+
+
+# ==================== ПРОФИЛЬ ====================
+
+@router.callback_query(F.data == "profile")
+async def cb_profile(callback: types.CallbackQuery, session: AsyncSession):
+    """Отобразить профиль пользователя (callback)"""
+    user_data = await get_or_create_user(session, callback.from_user.id)
+    await _show_profile_text(callback.message, user_data, session, is_callback=True)
+    await callback.answer()
+
+
+@router.message(Command("profile") | F.text.lower().in_({"профиль", "проф", "профиля"}))
+async def cmd_profile(message: types.Message, session: AsyncSession):
+    """Отобразить профиль пользователя (команда)"""
+    user_data = await get_or_create_user(session, message.from_user.id)
+    await _show_profile_text(message, user_data, session, is_callback=False)
+
+
+async def _show_profile_text(
+    message: types.Message,
+    user_data,
+    session: AsyncSession,
+    is_callback: bool = False
+):
+    """Внутренняя функция отображения профиля"""
+    
+    # Получаем ник
+    nickname = user_data.username or user_data.first_name or "Без имени"
+    
+    # Получаем привилегию (по умолчанию Игрок)
+    privilege = "Игрок"
+    
+    # Получаем клан
+    clan = user_data.clan if user_data.clan else "Не в клане."
+    
+    # Получаем уровень кирки
+    pickaxe_level = int(user_data.pickaxe_power * 2) if user_data.pickaxe_power else 1
+    
+    # Получаем текущую шахту
+    mine = MINES.get(user_data.current_mine, MINES[0])
+    current_mine = mine["name"]
+    
+    # Рассчитываем лимит
+    limit = BASE_TRANSFER_LIMIT + (user_data.level * LIMIT_PER_LEVEL)
+    limit_formatted = format_number(limit)
+    
+    # Получаем плазму из users
+    plasma = user_data.plasma or 0
+    
+    # Считаем сумму всей руды в инвентаре
+    result = await session.execute(
+        select(Inventory).where(
+            Inventory.user_id == user_data.id,
+            Inventory.item_type == "ore"
+        )
+    )
+    ores = result.scalars().all()
+    total_ores = sum(item.quantity for item in ores if item.quantity > 0)
+    
+    # Получаем количество ударов киркой из mining_sessions
+    ms_result = await session.execute(
+        select(MiningSession).where(MiningSession.user_id == user_data.id)
+    )
+    mining_sessions = ms_result.scalars().all()
+    total_strikes = sum(ms.hits or 0 for ms in mining_sessions)
+    
+    # Получаем убитых боссов
+    bosses_defeated = len(json.loads(user_data.bosses_defeated)) if user_data.bosses_defeated else 0
+    
+    # Дата регистрации
+    created_at = user_data.created_at
+    if created_at:
+        reg_date = created_at.strftime("%d-%m-%Y / %H:%M")
+    else:
+        reg_date = "—"
+    
+    # Формируем текст профиля с ровными строками
+    text = (
+        f"👤 **Профиль**\n"
+        f"{'.' * 31}\n"
+        f"🏷 | Ник в боте:      _{nickname}_\n"
+        f"🔰 | Привилегия:     *{privilege}*\n"
+        f"⭐ | Уровень:        *{user_data.level}*\n"
+        f"❗️ | Клан:           *{clan}*\n"
+        f"⛏️ | Инструмент:     *Кирка света ({pickaxe_level})*\n"
+        f"⚒️ | Выбранная шахта: *{current_mine}*\n"
+        f"💸 | Лимит:          _{limit_formatted}_\n"
+        f"💵 | Баланс:         *{format_number(user_data.balance)}$*\n"
+        f"🎆 | Плазма:         *{format_number(plasma)}*\n"
+        f"🧱 | Руды выкопано:  *{format_number(total_ores)} ед.*\n"
+        f"☠️ | Убито боссов:   *{bosses_defeated}*\n"
+        f"⛏️ | Ударов киркой:  *{total_strikes:,}*\n"
+        f"🗓️ | Регистрация:    _{reg_date}_"
+    )
+    
+    if is_callback:
+        await message.edit_text(text, reply_markup=get_profile_keyboard(), parse_mode="HTML")
+    else:
+        await message.answer(text, reply_markup=get_profile_keyboard(), parse_mode="HTML")
+
+
+@router.callback_query(F.data == "copy_nickname")
+async def cb_copy_nickname(callback: types.CallbackQuery, session: AsyncSession):
+    """Копировать никнейм"""
+    user_data = await get_or_create_user(session, callback.from_user.id)
+    nickname = user_data.username or user_data.first_name or "Без имени"
+    
+    # Отправляем ник для копирования
+    await callback.answer(f"📋 {nickname}", show_alert=True)
+
+
+@router.message(Command("limit") | F.text.lower().in_({"лимит", "лим"}))
+async def cmd_limit(message: types.Message, session: AsyncSession):
+    """Показать лимит на получение"""
+    user_data = await get_or_create_user(session, message.from_user.id)
+    
+    limit = BASE_TRANSFER_LIMIT + (user_data.level * LIMIT_PER_LEVEL)
+    received = user_data.received_today or 0
+    available = limit - received
+    
+    text = (
+        f"💸 **Лимит на получение**\n"
+        f"{'.' * 31}\n"
+        f"📊 Уровень: *{user_data.level}*\n"
+        f"💰 Лимит: *{format_number(limit)}*\n"
+        f"📥 Получено сегодня: *{format_number(received)}*\n"
+        f"✅ Доступно: *{format_number(available)}*"
+    )
+    
+    await message.answer(text, parse_mode="HTML")
