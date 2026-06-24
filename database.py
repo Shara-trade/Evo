@@ -16,6 +16,9 @@ class User(Base):
     username = Column(String, nullable=True)
     first_name = Column(String, nullable=True)
     
+    # Клан
+    clan = Column(String, nullable=True)  # Название клана
+    
     # Ресурсы
     balance = Column(BigInteger, default=0)
     plasma = Column(BigInteger, default=0)
