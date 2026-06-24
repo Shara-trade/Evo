@@ -89,7 +89,7 @@ def get_main_menu_keyboard() -> InlineKeyboardMarkup:
     builder.button(text="📈 Уровень", callback_data="level_info")
     builder.button(text="🔄 Перевод", callback_data="transfer_menu")
     builder.button(text="🏪 Магазин", callback_data="shop")
-    builder.button(text="👥 Профиль", callback_data="profile")
+    builder.button(text="👤 Профиль", callback_data="profile")
     
     builder.adjust(1)
     
@@ -147,5 +147,16 @@ def get_boss_keyboard(boss_id: int) -> InlineKeyboardMarkup:
     builder.button(text="⚔️ Атаковать", callback_data=f"attack_boss_{boss_id}")
     builder.button(text="🏃 Сбежать", callback_data="flee_boss")
     builder.adjust(2)
+    
+    return builder.as_markup()
+
+
+def get_profile_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура профиля"""
+    builder = InlineKeyboardBuilder()
+    
+    builder.button(text="📋 Копировать ник", callback_data="copy_nickname")
+    builder.button(text="🔙 Назад", callback_data="main_menu")
+    builder.adjust(1)
     
     return builder.as_markup()
